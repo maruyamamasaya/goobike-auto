@@ -1,297 +1,309 @@
-/*******************************************************
- * 新・在庫台帳 用 スクリプト（ガード一括ON/OFF＋スナップ個別ON/OFF 完全版）
- * - 行/列追加の禁止（差し戻し）
- * - 範囲保護の設定/解除
- * - 自動更新パネル（サイドバー）表示
- * - ガード機能の一括ON/OFF（差し戻し/トースト/保護）
- * - スナップショット記録（行数/列数）だけ個別にON/OFF
- *******************************************************/
+/********************************************************
+ * Goobike PAS 自動入力（Z列見出し版・321〜400行バッチ／進捗ログつき）
+ * - シート: 新・在庫台帳
+ * - 対象: 321〜400行 かつ C列が「掲載（グーのみ）」
+ * - Z列ヘッダで読み取り、欠損はデフォルト補完
+ * - サイドバーでリアルタイム進捗ログ＆行ごとのブックマークレット提示
+ ********************************************************/
 
-/** 対象シート名 */
-const TARGET_SHEETS = ['新・在庫台帳'];
-const TARGET_SHEET  = '新・在庫台帳';
+var TARGET_SHEET = '新・在庫台帳';
+var START_ROW = 321;
+var END_ROW   = 400;
+var CHUNK_SIZE = 10; // 一度に処理する行数（進捗更新単位）
 
-/** プロパティキー */
-const PROP_PREFIX         = 'banInsert:';        // スナップショット保存用（シートIDごと）
-const PROP_GUARDS_KEY     = 'guardsEnabled';     // "true" | "false"（デフォルトtrue）
-const PROP_SNAPSHOT_KEY   = 'snapshotEnabled';   // "true" | "false"（デフォルトtrue）
+/** Z列からの見出し順（セルの表示値と一致させる） */
+var HEADERS_Z = [
+  'メーカー\ngoobike','排気量\ngoobike','車種','支払総額','区分','モデル年式','初度登録年','車検/自賠責',
+  '製造国','排気量','修復歴','タイプ','メーカー認定','メーカー保証','販売店保証','整備','構造変更済み',
+  'ABS','品質評価書','ワンオーナー','ノーマル車','逆輸入車','通信販売可能車','社外マフラー','社外メーター',
+  'オーディオ','セキュリティ','セル付','ナビ','フルカスタム','FI車','４スト','LED/HID付','ETC','ボアアップ車','MT'
+];
 
+/** 必須相当のデフォルト補完値（必要に応じて調整可） */
+var DEFAULTS = {
+  'メーカー\ngoobike': 'ホンダ',
+  '排気量\ngoobike': '～125cc',
+  '車種': 'スーパーカブ110',
+  '区分': '中古車',
+  '修復歴': 'なし',
+  '製造国': '日本',
+  '排気量': '110',
+  '支払総額': '29.8',
+  'モデル年式': '未記入',
+  '初度登録年': '不明',
+  '車検/自賠責': 'なし'
+};
 
-function resetGuardAndSnapshotSettings() {
-  const props = PropertiesService.getScriptProperties();
-  props.deleteProperty('guardsEnabled');
-  props.deleteProperty('snapshotEnabled');
-  SpreadsheetApp.getUi().alert('✅ ガード・スナップショット設定をリセットしました');
-}
+/** チェック群（空でなければON扱いにするキー） */
+var CHECK_KEYS = [
+  'メーカー認定','メーカー保証','販売店保証','整備','構造変更済み','ABS','品質評価書','ワンオーナー',
+  'ノーマル車','逆輸入車','通信販売可能車','社外マフラー','社外メーター','オーディオ','セキュリティ',
+  'セル付','ナビ','フルカスタム','FI車','４スト','LED/HID付','ETC','ボアアップ車','MT'
+];
 
-/* =========================
- *  ガード（全体）ON/OFF
- * ========================= */
-function isGuardsEnabled_() {
-  const v = PropertiesService.getScriptProperties().getProperty(PROP_GUARDS_KEY);
-  return v === null ? true : v === 'true';
-}
-function enableGuards() {
-  PropertiesService.getScriptProperties().setProperty(PROP_GUARDS_KEY, 'true');
-  SpreadsheetApp.getActive().toast('✅ ガード機能を有効化しました', '状態', 5);
-}
-function disableGuards() {
-  PropertiesService.getScriptProperties().setProperty(PROP_GUARDS_KEY, 'false');
-  try { clearProtectionsForSheet(); } catch (_) {}
-  SpreadsheetApp.getActive().toast('⛔ ガード機能を無効化・保護を解除しました', '状態', 6);
-}
-
-/* =========================
- *  スナップショット（サイズ記録）ON/OFF
- * ========================= */
-function isSnapshotEnabled_() {
-  const v = PropertiesService.getScriptProperties().getProperty(PROP_SNAPSHOT_KEY);
-  return v === null ? true : v === 'true';
-}
-function enableSnapshot() {
-  PropertiesService.getScriptProperties().setProperty(PROP_SNAPSHOT_KEY, 'true');
-  SpreadsheetApp.getActive().toast('📸 スナップショット記録を再開しました', '状態', 5);
-}
-function disableSnapshot() {
-  PropertiesService.getScriptProperties().setProperty(PROP_SNAPSHOT_KEY, 'false');
-  SpreadsheetApp.getActive().toast('📸 スナップショット記録を停止しました', '状態', 5);
-}
-
-/* =========================
- *  メニュー
- * ========================= */
-function addGuardMenu_() {
-  SpreadsheetApp.getUi()
-    .createMenu('ガード切替')
-    .addItem('ガードを有効化', 'enableGuards')
-    .addItem('ガードを無効化（保護解除）', 'disableGuards')
-    .addSeparator()
-    .addItem('スナップショットを有効化', 'enableSnapshot')
-    .addItem('スナップショットを無効化', 'disableSnapshot')
-    .addToUi();
-}
-
+/** メニュー追加 */
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu('管理者用')
-    .addItem('自動更新パネルを開く', 'showSidebar')
+    .createMenu('Goobike連携')
+    .addItem('進捗ログつきサイドバー（321–400行）', 'openSidebar')
     .addToUi();
-
-  addGuardMenu_();
 }
 
-/* =========================
- *  onChange（警告表示のみ）
- * ========================= */
-function onChange(e) {
-  if (!isGuardsEnabled_()) return;              // ガードOFFなら何もしない
-  if (!e || !e.changeType || !e.source) return;
-
-  const ss = e.source;
-  const sheet = ss.getActiveSheet();
-  if (!sheet) return;
-  if (!TARGET_SHEETS.includes(sheet.getName())) return;
-
-  const type   = e.changeType;
-  const isRow  = type === 'INSERT_ROW';
-  const isCol  = type === 'INSERT_COLUMN';
-  const isGrid = type === 'INSERT_GRID';
-
-  if (isRow || isCol || isGrid) {
-    const msg = isRow
-      ? '🚫【新・在庫台帳】行の追加は禁止です！\n関数がズレる原因になります。'
-      : isCol
-        ? '🚫【新・在庫台帳】列の追加は禁止です！\n関数がズレる原因になります。'
-        : '🚫【新・在庫台帳】行/列数の変更（グリッド拡張）は禁止です！\n関数がズレる原因になります。';
-
-    ss.toast(msg, '禁止アラート', 7);
-    SpreadsheetApp.getUi().alert(msg);
-  }
-}
-
-/* =========================
- *  範囲保護 設定
- * ========================= */
-function setupRangeProtections_BM() {
-  if (!isGuardsEnabled_()) return; // ガードOFF時は保護を張らない
-
-  const ss = SpreadsheetApp.getActive();
-  const sheet = ss.getSheetByName(TARGET_SHEET);
-  if (!sheet) throw new Error('対象シートが見つかりません: ' + TARGET_SHEET);
-
-  // 既存保護を全削除
-  sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET).forEach(p => p.remove());
-  sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(p => p.remove());
-
-  const maxR = sheet.getMaxRows();
-  const maxC = sheet.getMaxColumns();
-
-  const okLastRow = Math.min(3000, maxR);
-  const bmColIdx  = Math.min(sheet.getRange('BM1').getColumn(), maxC); // BM=65列
-
-  const ngRanges = [];
-
-  // 1) ヘッダ 1行 全列
-  if (maxR >= 1 && maxC >= 1) {
-    ngRanges.push(sheet.getRange(1, 1, 1, maxC));
-  }
-  // 2) 3001行目以降
-  if (maxR > okLastRow) ngRanges.push(sheet.getRange(okLastRow + 1, 1, maxR - okLastRow, maxC));
-  // 3) BM右側
-  if (maxC > bmColIdx) ngRanges.push(sheet.getRange(1, bmColIdx + 1, maxR, maxC - bmColIdx));
-
-  const me = Session.getEffectiveUser();
-  ngRanges.forEach(r => {
-    const prot = r.protect();
-    prot.setDescription('編集禁止ゾーン（関数ズレ防止）');
-    prot.addEditor(me);
-    prot.removeEditors(prot.getEditors().filter(u => u.getEmail() !== me.getEmail()));
-    // prot.setWarningOnly(true); // 警告のみ許可にしたい場合
-  });
-}
-
-/* =========================
- *  スナップショット 初期保存（任意）
- * ========================= */
-function banInsertInit() {
-  const sheet = SpreadsheetApp.getActive().getSheetByName(TARGET_SHEET);
-  if (!sheet) return;
-  _saveSize(sheet); // スナップショットがOFFの場合は内部で無視
-}
-
-/* =========================
- *  差し戻し（インストール型トリガー用）
- * ========================= */
-function banInsertOnChange(e) {
-  if (!isGuardsEnabled_()) return;              // ガードOFFなら差し戻しも無効
-  if (!e || !e.changeType || !e.source) return;
-
-  const sheet = e.source.getActiveSheet();
-  if (!sheet || sheet.getName() !== TARGET_SHEET) return;
-
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return;
-  try {
-    const type = e.changeType;
-
-    if (type === 'INSERT_ROW') {
-      const rng = sheet.getActiveRange();
-      if (rng) {
-        sheet.deleteRows(rng.getRow(), rng.getNumRows());
-        _toast('🚫 行の追加は禁止です（元に戻しました）');
-      } else {
-        _toast('🚫 行の追加は禁止です');
-      }
-    } else if (type === 'INSERT_COLUMN') {
-      const rng = sheet.getActiveRange();
-      if (rng) {
-        sheet.deleteColumns(rng.getColumn(), rng.getNumColumns());
-        _toast('🚫 列の追加は禁止です（元に戻しました）');
-      } else {
-        _toast('🚫 列の追加は禁止です');
-      }
-    } else if (type === 'INSERT_GRID') {
-      // 右端/下端の「行/列を追加」系はサイズ比較で差し戻し
-      const props = PropertiesService.getScriptProperties();
-      const key = PROP_PREFIX + sheet.getSheetId();
-      let prev = {};
-      try { prev = JSON.parse(props.getProperty(key) || '{}'); } catch (_){ }
-
-      if (!prev.rows || !prev.cols) { _saveSize(sheet); return; }
-
-      const curRows = sheet.getMaxRows();
-      const curCols = sheet.getMaxColumns();
-
-      if (curRows > prev.rows) {
-        sheet.deleteRows(prev.rows + 1, curRows - prev.rows);
-        _toast('🚫 行の追加は禁止です（元に戻しました）');
-      }
-      if (curCols > prev.cols) {
-        sheet.deleteColumns(prev.cols + 1, curCols - prev.cols);
-        _toast('🚫 列の追加は禁止です（元に戻しました）');
-      }
-    }
-
-    _saveSize(sheet); // ← スナップOFF時は内部で拒否
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-/* =========================
- *  ユーティリティ
- * ========================= */
-function _saveSize(sheet) {
-  // ガードOFF時 or スナップOFF時は記録しない
-  if (!isGuardsEnabled_())   return;
-  if (!isSnapshotEnabled_()) return;
-
-  const props = PropertiesService.getScriptProperties();
-  const key = PROP_PREFIX + sheet.getSheetId();
-  props.setProperty(key, JSON.stringify({
-    rows: sheet.getMaxRows(),
-    cols: sheet.getMaxColumns()
-  }));
-}
-
-function _toast(msg) {
-  SpreadsheetApp.getActive().toast(msg, '禁止', 6);
-  // SpreadsheetApp.getUi().alert(msg); // 必要なら
-}
-
-/* =========================
- *  保護解除（手動）
- * ========================= */
-function clearProtectionsForSheet() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(TARGET_SHEET);
-  if (!sheet) throw new Error('シートが見つかりません: ' + TARGET_SHEET);
-
-  sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET).forEach(p => { if (p.canEdit()) p.remove(); });
-  sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(p => { if (p.canEdit()) p.remove(); });
-
-  SpreadsheetApp.getActive().toast("✅ シート '" + TARGET_SHEET + "' の保護を解除しました", "完了", 5);
-}
-
-/* =========================
- *  サイドバー（ダミー表示）
- * ========================= */
-function showSidebar() {
-  const html = HtmlService.createHtmlOutputFromFile('Sidebar').setTitle('自動更新');
+/** サイドバーを開く */
+function openSidebar() {
+  var html = HtmlService.createHtmlOutputFromFile('Sidebar')
+    .setTitle('Goobike連携（進捗ログ）');
   SpreadsheetApp.getUi().showSidebar(html);
 }
 
-function simulateRun() {
-  const now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy/MM/dd HH:mm:ss');
-  const steps = [];
-  const menuUrl = 'https://pas.goobike.com/php/client/menu.php';
-  const regUrl  = 'https://pas.goobike.com/sa/bike_registration/main';
+/** 列記号 → 列番号（A=1） */
+function colToIndex_(col) {
+  var n = 0;
+  for (var i = 0; i < col.length; i++) {
+    n = n * 26 + (col.charCodeAt(i) - 64);
+  }
+  return n;
+}
 
-  let modelText = '';
-  try {
-    const sh = SpreadsheetApp.getActive().getSheetByName(TARGET_SHEET);
-    modelText = sh ? sh.getRange('Y2').getDisplayValue() : '';
-  } catch (e) {}
+/** ブラウザ側で実行する：ページ入力＆一時保存ロジック（文字列として返す） */
+function makePASFiller_(DATA) {
+  return "" +
+"(function(){\n" +
+"  var D = " + JSON.stringify(DATA) + ";\n" +
+"  var norm = function(s){ return (s||'').toString().replace(/\\s+/g,'').toLowerCase(); };\n" +
+"  var $  = function(s,r){ return (r||document).querySelector(s); };\n" +
+"  var $$ = function(s,r){ return Array.prototype.slice.call((r||document).querySelectorAll(s)); };\n" +
 
-  const missing = [];
-  if (!modelText) missing.push('車種');
+"  function findFieldByLabel(labelText){\n" +
+"    if(!labelText) return null;\n" +
+"    var target = norm(labelText);\n" +
+"    var labels = $$('label');\n" +
+"    for(var i=0;i<labels.length;i++){\n" +
+"      var lb = labels[i];\n" +
+"      var txt = norm(lb.textContent||'');\n" +
+"      if(txt.indexOf(target) !== -1){\n" +
+"        var forId = lb.getAttribute('for');\n" +
+"        if(forId && document.getElementById(forId)) return document.getElementById(forId);\n" +
+"        var near = lb.parentElement && lb.parentElement.querySelector('select, input, textarea');\n" +
+"        if(near) return near;\n" +
+"      }\n" +
+"    }\n" +
+"    var heads = $$('h2,h3,dt,div,p,span');\n" +
+"    for(var j=0;j<heads.length;j++){\n" +
+"      var h = heads[j];\n" +
+"      var t = norm(h.textContent||'');\n" +
+"      if(t.indexOf(target) !== -1){\n" +
+"        var near2 = h.parentElement && h.parentElement.querySelector('select, input, textarea');\n" +
+"        if(near2) return near2;\n" +
+"      }\n" +
+"    }\n" +
+"    return null;\n" +
+"  }\n" +
 
-  steps.push({type: 'info',    text: `【${now}】管理者パネルを開きました。`});
-  steps.push({type: 'success', text: 'ログイン成功しました。'});
-  steps.push({type: 'link',    text: 'グーバイクセールスアシスタント【クリックすると開きます】', href: menuUrl});
-  steps.push({type: 'link',    text: 'バイク登録 | グーバイクセールスアシスタント【クリックすると開きます】', href: regUrl});
-  steps.push({type: 'success', text: 'メーカー・車種情報の登録フローを確認しました。'});
-  steps.push({type: 'info',    text: 'スプレッドシートの各項目の値を取得中…'});
-  steps.push({type: 'info',    text: `「新・在庫台帳」シートの Y2（車種）を登録します：${modelText || '（未入力）'}`});
-  steps.push({type: 'warn',    text: '必須項目が読み込めませんでした。'});
+"  function setSelectByText(labelOrEl, want){\n" +
+"    if(!want) return;\n" +
+"    var el = (labelOrEl && labelOrEl.nodeType===1) ? labelOrEl : findFieldByLabel(labelOrEl);\n" +
+"    if(!el || !el.options) return;\n" +
+"    var w = norm(want);\n" +
+"    var hit = false;\n" +
+"    for(var i=0;i<el.options.length;i++){\n" +
+"      var opt = el.options[i];\n" +
+"      var t = norm(opt.textContent||opt.label||'');\n" +
+"      if(t.indexOf(w)!==-1 || w.indexOf(t)!==-1){ opt.selected = true; hit = true; break; }\n" +
+"    }\n" +
+"    el.dispatchEvent(new Event('change',{bubbles:true}));\n" +
+"    if(!hit){ el.value = want; el.dispatchEvent(new Event('change',{bubbles:true})); }\n" +
+"  }\n" +
 
-  if (missing.length > 0) {
-    steps.push({type: 'error', text: `入力項目に未入力の項目があります：${missing.join('、')}`});
-  } else {
-    steps.push({type: 'success', text: 'すべての必須項目を読み込みました。'});
+"  function setRadioByText(label, wantText){\n" +
+"    if(!wantText) return;\n" +
+"    var anchor = findFieldByLabel(label);\n" +
+"    var root = anchor ? (anchor.closest && anchor.closest('section, fieldset, div, form')) || document : document;\n" +
+"    var w = norm(wantText);\n" +
+"    var rads = $$('input[type=\"radio\"]', root);\n" +
+"    for(var i=0;i<rads.length;i++){\n" +
+"      var r = rads[i];\n" +
+"      var lab = r.closest ? r.closest('label') : (r.parentElement||null);\n" +
+"      var txt = norm(lab ? lab.textContent : '');\n" +
+"      if(txt.indexOf(w)!==-1){ r.click(); return; }\n" +
+"    }\n" +
+"  }\n" +
+
+"  function setCheckboxByText(label, textList){\n" +
+"    if(!textList || !textList.length) return;\n" +
+"    var anchor = findFieldByLabel(label);\n" +
+"    var root = anchor ? (anchor.closest && anchor.closest('section, fieldset, div, form')) || document : document;\n" +
+"    var wants = textList.map(function(t){ return norm(t); });\n" +
+"    var cks = $$('input[type=\"checkbox\"]', root);\n" +
+"    for(var i=0;i<cks.length;i++){\n" +
+"      var c = cks[i];\n" +
+"      var lab = c.closest ? c.closest('label') : (c.parentElement||null);\n" +
+"      var txt = norm(lab ? lab.textContent : '');\n" +
+"      for(var k=0;k<wants.length;k++){\n" +
+"        if(txt.indexOf(wants[k])!==-1){ if(!c.checked) c.click(); break; }\n" +
+"      }\n" +
+"    }\n" +
+"  }\n" +
+
+"  function setTextByLabel(label,val){\n" +
+"    if(val===null || val===undefined || val==='') return;\n" +
+"    var el = findFieldByLabel(label);\n" +
+"    if(!el) return;\n" +
+"    el.focus(); el.value = val;\n" +
+"    el.dispatchEvent(new Event('input',{bubbles:true}));\n" +
+"    el.dispatchEvent(new Event('change',{bubbles:true}));\n" +
+"  }\n" +
+
+"  /* ====== 入力マッピング ====== */\n" +
+"  setSelectByText('メーカー',      D['メーカー\\ngoobike']);\n" +
+"  setSelectByText('排気区分',      D['排気量\\ngoobike']);\n" +
+"  setSelectByText('車種',          D['車種']);\n" +
+"  setSelectByText('排気量',        D['排気量']);\n" +
+"  setTextByLabel('支払総額',       D['支払総額']);\n" +
+"  setRadioByText('区分',           D['区分']);\n" +
+"  setRadioByText('モデル年式',     D['モデル年式']);\n" +
+"  setSelectByText('モデル年式',    D['モデル年式']);\n" +
+"  setRadioByText('初度登録年',     D['初度登録年']);\n" +
+"  setSelectByText('初度登録年',    D['初度登録年']);\n" +
+"  setRadioByText('車検・自賠責保険', D['車検/自賠責']);\n" +
+"  setSelectByText('製造国',        D['製造国']);\n" +
+"  setRadioByText('修復歴',         D['修復歴']);\n" +
+"  setSelectByText('タイプ',        D['タイプ']);\n" +
+
+"  function ON(k){ return (D[k]||'') === '1'; }\n" +
+"  var marks = [];\n" +
+"  if(ON('メーカー認定')) marks.push('メーカー認定');\n" +
+"  if(ON('メーカー保証')) marks.push('メーカー保証');\n" +
+"  if(ON('販売店保証'))   marks.push('保証');\n" +
+"  if(ON('整備'))         marks.push('整備');\n" +
+
+"  var opts = [];\n" +
+"  if(ON('構造変更済み'))   opts.push('構造変更済み');\n" +
+"  if(ON('ABS'))            opts.push('ABS');\n" +
+"  if(ON('品質評価書'))     opts.push('品質評価書');\n" +
+"  if(ON('ワンオーナー'))   opts.push('ワンオーナー');\n" +
+"  if(ON('ノーマル車'))     opts.push('ノーマル車');\n" +
+"  if(ON('逆輸入車'))       opts.push('逆輸入車');\n" +
+"  if(ON('通信販売可能車')) opts.push('通信販売可能車');\n" +
+"  if(ON('社外マフラー'))   opts.push('社外マフラー');\n" +
+"  if(ON('社外メーター'))   opts.push('社外メーター');\n" +
+"  if(ON('オーディオ'))     opts.push('オーディオ');\n" +
+"  if(ON('セキュリティ'))   opts.push('セキュリティ');\n" +
+"  if(ON('セル付'))         opts.push('セル付');\n" +
+"  if(ON('ナビ'))           opts.push('ナビ');\n" +
+"  if(ON('フルカスタム'))   opts.push('フルカスタム');\n" +
+"  if(ON('FI車'))           opts.push('FI車');\n" +
+"  if(ON('４スト'))         opts.push('４スト');\n" +
+"  if(ON('LED/HID付'))      opts.push('LED/HID付');\n" +
+"  if(ON('ETC'))            opts.push('ETC');\n" +
+"  if(ON('ボアアップ車'))   opts.push('ボアアップ車');\n" +
+"  if(ON('MT'))             opts.push('MT');\n" +
+
+"  if(marks.length) setCheckboxByText('マーク', marks);\n" +
+"  if(opts.length)  setCheckboxByText('オプション', opts);\n" +
+
+"  var btns = $$('button, input[type=\"button\"], input[type=\"submit\"]');\n" +
+"  var save = null;\n" +
+"  for(var i=0;i<btns.length;i++){\n" +
+"    var t = (btns[i].value || btns[i].textContent || '').trim();\n" +
+"    if(/一時保存/.test(t)){ save = btns[i]; break; }\n" +
+"  }\n" +
+"  if (save) {\n" +
+"    save.click();\n" +
+"    setTimeout(function(){ alert('✅ 入力して「一時保存」をクリックしました。結果を確認してください。'); }, 300);\n" +
+"  } else {\n" +
+"    alert('✅ 入力を反映しました（「一時保存」ボタンは見つかりませんでした）。ページは開いたままでOKです。');\n" +
+"  }\n" +
+"})();\n";
+}
+
+/** 1チャンク処理：startIndex（0基点）から size 件分スキャンして結果返す */
+function processChunk(startIndex, size) {
+  var sh = SpreadsheetApp.getActive().getSheetByName(TARGET_SHEET);
+  if (!sh) throw new Error('シートが見つかりません: ' + TARGET_SHEET);
+
+  // パラメータの防御
+  var totalRows = Math.max(0, END_ROW - START_ROW + 1);
+  var idx = Math.max(0, parseInt(startIndex, 10) || 0);
+  var step = Math.max(1, parseInt(size, 10) || CHUNK_SIZE);
+
+  if (totalRows === 0) {
+    return { done: true, items: [], logs: ['対象範囲に行がありません'], nextIndex: idx, totalRows: 0 };
+  }
+  if (idx >= totalRows) {
+    return { done: true, items: [], logs: ['done'], nextIndex: totalRows, totalRows: totalRows };
   }
 
-  steps.push({type: 'note', text: '更新は実施しませんでした。'});
+  // from は必ず 1 以上になるように
+  var from = START_ROW + idx;              // シート上の開始行
+  if (from < 1) from = 1;
 
-  return { startedAt: now, steps, caution: '実行中のため、再度クリックしないでください。' };
+  // 残り行数（from が範囲外に出ていないかチェック）
+  var remaining = END_ROW - from + 1;
+  if (remaining <= 0) {
+    return { done: true, items: [], logs: ['done'], nextIndex: totalRows, totalRows: totalRows };
+  }
+
+  var count = Math.min(step, remaining);
+
+  var logs = [];
+  logs.push('🔎 範囲読み込み: Row ' + from + '〜' + (from + count - 1));
+
+  var colCIdx   = colToIndex_('C');
+  var startColZ = colToIndex_('Z');
+
+  // getRange の行・列・件数は必ず 1 以上に
+  var rngC = sh.getRange(from, colCIdx, count, 1).getDisplayValues();
+  var rngZ = sh.getRange(from, startColZ, count, HEADERS_Z.length).getDisplayValues();
+
+  var items = []; // { row, bookmarklet, summary }
+  var hit = 0, skipped = 0, errors = 0;
+
+  for (var i = 0; i < count; i++) {
+    var rowNum = from + i;
+    var cVal = (rngC[i][0] || '').toString().trim();
+
+    if (cVal !== '掲載（グーのみ）') { skipped++; continue; }
+
+    try {
+      var vals = rngZ[i];
+      var rec = {};
+      for (var j = 0; j < HEADERS_Z.length; j++) {
+        var header = HEADERS_Z[j];
+        var raw = (vals[j] || '').toString().trim();
+        rec[header] = raw || DEFAULTS[header] || '';
+      }
+      // チェック群は空でなければ '1'
+      for (var k = 0; k < CHECK_KEYS.length; k++) {
+        var ck = CHECK_KEYS[k];
+        rec[ck] = rec[ck] ? '1' : '';
+      }
+
+      var filler = makePASFiller_(rec);
+      var bm = 'javascript:' + encodeURIComponent(filler);
+
+      var summary = (rec['メーカー\ngoobike'] || '') + ' / ' +
+                    (rec['車種'] || '') + ' / 総額:' +
+                    (rec['支払総額'] || '');
+
+      items.push({ row: rowNum, bookmarklet: bm, summary: summary });
+      hit++;
+    } catch (e) {
+      errors++;
+      logs.push('❌ 失敗: Row ' + rowNum + ' / ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  logs.push('✅ チャンク完了: ヒット ' + hit + '件, スキップ ' + skipped + '件, エラー ' + errors + '件');
+
+  var nextIndex = idx + count;
+  var done = nextIndex >= totalRows;
+
+  return {
+    done: done,
+    nextIndex: done ? totalRows : nextIndex, // 常に数値を返す
+    items: items,
+    logs: logs,
+    totalRows: totalRows
+  };
 }
