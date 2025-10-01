@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; }
+    .wrap { padding: 12px; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    .muted { color: #6b7280; font-size: 12px; margin-top: 8px; }
+    .status { margin-top: 12px; padding: 10px; border-radius: 8px; background: #f3f4f6; }
+    .log { margin-top: 12px; display: grid; gap: 6px; }
+    .row {
+      padding: 8px 10px; border-radius: 8px; background: #fff; border: 1px solid #e5e7eb;
+      display: flex; align-items: center; gap: 8px; word-break: break-word;
+    }
+    .row.info    { border-left: 4px solid #3b82f6; }
+    .row.success { border-left: 4px solid #10b981; }
+    .row.warn    { border-left: 4px solid #f59e0b; }
+    .row.error   { border-left: 4px solid #ef4444; background: #fff7f7; }
+    .row.note    { border-left: 4px solid #9ca3af; color: #374151; }
+    .row a { color: #2563eb; text-decoration: none; }
+    .countdown { font-variant-numeric: tabular-nums; font-weight: 700; }
+    .caution {
+      margin-top: 8px; background: #fff7ed; border: 1px solid #fdba74; color: #9a3412;
+      padding: 8px 10px; border-radius: 8px; display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>自動更新</h1>
+
+    <div id="caution" class="caution">実行中のため、再度クリックしないでください。</div>
+
+    <div id="status" class="status">
+      <div>3秒後に開始します：<span id="count" class="countdown">—</span></div>
+      <div class="muted">グーバイクセールスアシスタントにログインします（安全のため、適切な手順で認証します。）</div>
+    </div>
+
+    <div class="log" id="log"></div>
+  </div>
+
+  <script>
+    const countEl = document.getElementById('count');
+    const logEl   = document.getElementById('log');
+    const caution = document.getElementById('caution');
+
+    document.addEventListener('DOMContentLoaded', () => {
+      // サイドバーを開いたら即開始
+      caution.style.display = 'block';
+      startCountdown(3, () => {
+        google.script.run
+          .withSuccessHandler(renderResult)
+          .simulateRun();
+      });
+    });
+
+    function startCountdown(sec, onDone) {
+      let n = sec;
+      countEl.textContent = n + ' 秒';
+      const t = setInterval(() => {
+        n--;
+        countEl.textContent = (n > 0) ? (n + ' 秒') : '開始';
+        if (n <= 0) {
+          clearInterval(t);
+          onDone && onDone();
+        }
+      }, 250);
+    }
+
+    function renderResult(res) {
+      appendRow('info', `開始時刻：${res.startedAt}`);
+
+      (res.steps || []).forEach(s => {
+        if (s.type === 'link' && s.href) {
+          const a = document.createElement('a');
+          a.href = s.href;
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.textContent = s.text;
+          const div = document.createElement('div');
+          div.className = 'row info';
+          div.append(a);
+          logEl.appendChild(div);
+        } else {
+          appendRow(s.type || 'info', s.text);
+        }
+      });
+
+      // 実行終了後も注意喚起は表示のまま（再操作抑止のメッセージとして維持）
+    }
+
+    function appendRow(type, text) {
+      const div = document.createElement('div');
+      div.className = `row ${type}`;
+      div.textContent = text;
+      logEl.appendChild(div);
+    }
+  </script>
+</body>
+</html>
