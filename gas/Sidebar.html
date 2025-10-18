@@ -1,101 +1,136 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8">
   <style>
     body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; }
     .wrap { padding: 12px; }
     h1 { font-size: 16px; margin: 0 0 8px; }
-    .muted { color: #6b7280; font-size: 12px; margin-top: 8px; }
-    .status { margin-top: 12px; padding: 10px; border-radius: 8px; background: #f3f4f6; }
-    .log { margin-top: 12px; display: grid; gap: 6px; }
-    .row {
-      padding: 8px 10px; border-radius: 8px; background: #fff; border: 1px solid #e5e7eb;
-      display: flex; align-items: center; gap: 8px; word-break: break-word;
-    }
-    .row.info    { border-left: 4px solid #3b82f6; }
-    .row.success { border-left: 4px solid #10b981; }
-    .row.warn    { border-left: 4px solid #f59e0b; }
-    .row.error   { border-left: 4px solid #ef4444; background: #fff7f7; }
-    .row.note    { border-left: 4px solid #9ca3af; color: #374151; }
-    .row a { color: #2563eb; text-decoration: none; }
-    .countdown { font-variant-numeric: tabular-nums; font-weight: 700; }
-    .caution {
-      margin-top: 8px; background: #fff7ed; border: 1px solid #fdba74; color: #9a3412;
-      padding: 8px 10px; border-radius: 8px; display: none;
-    }
+    .muted { color: #6b7280; font-size: 12px; margin-top: 4px; }
+    .status { margin: 8px 0 12px; padding: 10px; border-radius: 8px; background: #f3f4f6; }
+    .bar { height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden; }
+    .bar > div { height: 100%; width: 0%; background: #3b82f6; transition: width .25s; }
+    .log { margin-top: 10px; display: grid; gap: 6px; max-height: 200px; overflow: auto; }
+    .row { padding: 6px 8px; border-radius: 8px; background: #fff; border: 1px solid #e5e7eb; font-size: 12px; }
+    .row.ok { border-left: 4px solid #10b981; }
+    .row.info { border-left: 4px solid #3b82f6; }
+    .row.warn { border-left: 4px solid #f59e0b; }
+    .row.err { border-left: 4px solid #ef4444; background: #fff7f7; }
+    .list { margin-top: 12px; display: grid; gap: 8px; }
+    .card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; background: #fff; }
+    .card .h { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+    .card .row2 { display: flex; gap: 8px; margin-bottom: 6px; }
+    .btn { display: inline-block; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 8px; background: #f9fafb; text-decoration: none; color: #111; font-size: 12px; }
+    .btn:hover { background: #f3f4f6; }
+    .ta { width: 100%; height: 96px; font-size: 12px; }
+    .foot { margin-top: 8px; color: #6b7280; font-size: 11px; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>自動更新</h1>
-
-    <div id="caution" class="caution">実行中のため、再度クリックしないでください。</div>
-
-    <div id="status" class="status">
-      <div>3秒後に開始します：<span id="count" class="countdown">—</span></div>
-      <div class="muted">グーバイクセールスアシスタントにログインします（安全のため、適切な手順で認証します。）</div>
+    <h1>Goobike連携（進捗ログ）</h1>
+    <div class="status">
+      <div>対象: <b>Row 321〜400</b> ／ C列=<b>掲載（グーのみ）</b></div>
+      <div class="bar"><div id="bar"></div></div>
+      <div class="muted" id="stat">準備中…</div>
     </div>
 
     <div class="log" id="log"></div>
+
+    <div class="list" id="list"></div>
+
+    <div class="foot">※ 各Rowのコードをブックマークに保存 → PASページで実行してください。</div>
   </div>
 
   <script>
-    const countEl = document.getElementById('count');
-    const logEl   = document.getElementById('log');
-    const caution = document.getElementById('caution');
+    const bar = document.getElementById('bar');
+    const stat = document.getElementById('stat');
+    const logEl = document.getElementById('log');
+    const listEl = document.getElementById('list');
 
-    document.addEventListener('DOMContentLoaded', () => {
-      // サイドバーを開いたら即開始
-      caution.style.display = 'block';
-      startCountdown(3, () => {
-        google.script.run
-          .withSuccessHandler(renderResult)
-          .simulateRun();
-      });
-    });
+    let nextIndex = 0;
+    let totalRows = 80; // 初期仮
+    let done = false;
+    let processed = 0;
 
-    function startCountdown(sec, onDone) {
-      let n = sec;
-      countEl.textContent = n + ' 秒';
-      const t = setInterval(() => {
-        n--;
-        countEl.textContent = (n > 0) ? (n + ' 秒') : '開始';
-        if (n <= 0) {
-          clearInterval(t);
-          onDone && onDone();
-        }
-      }, 250);
-    }
-
-    function renderResult(res) {
-      appendRow('info', `開始時刻：${res.startedAt}`);
-
-      (res.steps || []).forEach(s => {
-        if (s.type === 'link' && s.href) {
-          const a = document.createElement('a');
-          a.href = s.href;
-          a.target = '_blank';
-          a.rel = 'noopener';
-          a.textContent = s.text;
-          const div = document.createElement('div');
-          div.className = 'row info';
-          div.append(a);
-          logEl.appendChild(div);
-        } else {
-          appendRow(s.type || 'info', s.text);
-        }
-      });
-
-      // 実行終了後も注意喚起は表示のまま（再操作抑止のメッセージとして維持）
-    }
-
-    function appendRow(type, text) {
+    function addLog(msg, kind='info'){
       const div = document.createElement('div');
-      div.className = `row ${type}`;
-      div.textContent = text;
+      div.className = 'row ' + (kind==='ok'?'ok':kind==='err'?'err':kind==='warn'?'warn':'info');
+      div.textContent = msg;
       logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
     }
+
+    function addItemCard(item){
+      const card = document.createElement('div'); card.className = 'card';
+      card.innerHTML = `
+        <div class="h">Row ${item.row} ｜ ${escapeHtml(item.summary || '')}</div>
+        <div class="row2">
+          <a class="btn" target="_blank" rel="noopener" href="https://pas.goobike.com/sa/bike_registration/main">PASを開く</a>
+          <button class="btn" onclick="copyCode(this)">ブックマークレットをコピー</button>
+        </div>
+        <textarea class="ta" readonly>${item.bookmarklet}</textarea>
+      `;
+      listEl.appendChild(card);
+    }
+
+    function copyCode(btn){
+      const ta = btn.closest('.card').querySelector('.ta');
+      ta.select(); document.execCommand('copy');
+      btn.textContent = 'コピーしました';
+      setTimeout(()=>btn.textContent='ブックマークレットをコピー', 1000);
+    }
+
+    function escapeHtml(s){
+      return (s || '').replace(/[&<>"']/g, m => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[m]));
+    }
+
+    function updateBar() {
+      const pct = Math.max(0, Math.min(100, Math.round((processed / totalRows) * 100)));
+      bar.style.width = pct + '%';
+      stat.textContent = done ? `完了：ヒット ${listEl.children.length} 件 / 全体 ${totalRows} 行`
+                              : `処理中… ${processed}/${totalRows} 行`;
+    }
+
+    function tick(){
+      google.script.run
+        .withSuccessHandler((res)=>{
+          if (typeof res.totalRows === 'number') totalRows = res.totalRows;
+
+          (res.logs || []).forEach(l => addLog(l, /❌/.test(l) ? 'err' : /✅/.test(l) ? 'ok' : 'info'));
+          (res.items || []).forEach(addItemCard);
+
+          if (typeof res.nextIndex === 'number') {
+            nextIndex = res.nextIndex;
+            processed = Math.min(res.nextIndex, totalRows);
+          }
+
+          done = !!res.done;
+          updateBar();
+
+          if (!done) {
+            setTimeout(tick, 200);
+          } else {
+            addLog('🎉 すべてのチャンクが完了しました。', 'ok');
+          }
+        })
+        .withFailureHandler((err)=>{
+          addLog('❌ エラー: ' + (err && err.message ? err.message : err), 'err');
+          done = true;
+          updateBar();
+        })
+        .processChunk(nextIndex, /* size */ 10);
+    }
+
+    addLog('⚙️ 初期化しています…');
+    updateBar();
+    setTimeout(tick, 300);
   </script>
 </body>
 </html>
