@@ -78,6 +78,7 @@ function onOpen() {
     .addToUi();
 
   addGuardMenu_();
+  if (typeof addBookmarkletMenu_ === 'function') addBookmarkletMenu_();
 }
 
 /* =========================
