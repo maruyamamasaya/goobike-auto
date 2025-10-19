@@ -100,9 +100,16 @@
   }
 
   // 値取得（ヘッダー名で拾う。無ければ ""）
-  function get(hname) {
-    const idx = header.findIndex(h => norm(h) === norm(hname));
-    return idx >= 0 ? norm(data[idx]) : "";
+  function get(hname, occurrence = 1) {
+    const wanted = Math.max(occurrence, 1);
+    let count = 0;
+    for (let i = 0; i < header.length; i++) {
+      if (norm(header[i]) === norm(hname)) {
+        count++;
+        if (count === wanted) return norm(data[i]);
+      }
+    }
+    return "";
   }
 
   // セレクトヘルパ
@@ -164,13 +171,13 @@
   };
 
   // ===== A) メーカー / 排気区分 / 車種 / 排気量 / 型式 / 色系 =====
-  const makerName      = get("メーカー") || get("メーカー"); // 重複名だがget()は最初の一致を拾う
+  const makerName      = get("メーカー", 2) || get("メーカー"); // スプレッドシート右側のメーカー列を優先
   const haikiKubun     = get("排気区分");
-  const bikeName       = get("車種");
-  const haikiFree      = get("排気量"); // 4桁自由入力を想定（※同名が2つあるが先に出る方でOK）
+  const bikeName       = get("車種", 2) || get("車種");
+  const haikiFree      = get("排気量", 2) || get("排気量"); // 4桁自由入力を想定（右側列優先）
   const modelFree      = get("型式");   // 15文字
   const colorTypeName  = get("系統色");
-  const colorName      = get("色");
+  const colorName      = get("色", 2) || get("色");
 
   // メーカー
   (function(){
@@ -359,7 +366,7 @@
     "フルカスタム" : "opt_fullcustom",
     "ノーマル車"   : "opt_normal",
     "セル付き"     : "opt_cell_add",
-    "ボアアップ社" : "opt_boaup",
+    "ボアアップ車" : "opt_boaup",
     "社外マフラー" : "opt_muffler_outside",
     "ナビ"         : "opt_navi",
     "2スト"        : "opt_2suto",
